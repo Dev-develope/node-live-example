@@ -112,3 +112,41 @@ body {
   color: white;
   background-color: rgba(0, 0, 0, 0.3);
 }
+
+.tts {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translate(-50%, 0);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-family: Verdana, Geneva, Tahoma, sans-serif;
+}
+
+.tts textarea {
+  width: 320px;
+  padding: 0.5rem;
+  border: none;
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.tts button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #50cddd;
+  color: #000;
+  cursor: pointer;
+}
+
+.tts button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tts-status {
+  color: #fff;
+  align-self: center;
+}

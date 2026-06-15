@@ -2,14 +2,21 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const { createClient, LiveTranscriptionEvents } = require("@deepgram/sdk");
+const { createTTSProvider } = require("./tts");
 const dotenv = require("dotenv");
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+
+// Two WebSocket endpoints share the HTTP server, routed by path on upgrade:
+//   /     -> Deepgram speech-to-text (live transcription)
+//   /tts  -> 60db text-to-speech (audio synthesis)
+const wssStt = new WebSocket.Server({ noServer: true });
+const wssTts = new WebSocket.Server({ noServer: true });
 
 const deepgramClient = createClient(process.env.DEEPGRAM_API_KEY);
+const ttsProvider = createTTSProvider();
 let keepAlive;
 
 const setupDeepgram = (ws) => {
@@ -63,7 +70,7 @@ const setupDeepgram = (ws) => {
   return deepgram;
 };
 
-wss.on("connection", (ws) => {
+wssStt.on("connection", (ws) => {
   console.log("socket: client connected");
   let deepgram = setupDeepgram(ws);
 
@@ -79,7 +86,7 @@ wss.on("connection", (ws) => {
       /* Attempt to reopen the Deepgram connection */
       deepgram.finish();
       deepgram.removeAllListeners();
-      deepgram = setupDeepgram(socket);
+      deepgram = setupDeepgram(ws);
     } else {
       console.log("socket: data couldn't be sent to deepgram");
     }
@@ -90,6 +97,72 @@ wss.on("connection", (ws) => {
     deepgram.finish();
     deepgram.removeAllListeners();
     deepgram = null;
+  });
+});
+
+wssTts.on("connection", (ws) => {
+  console.log("tts: client connected");
+
+  ws.on("message", async (message) => {
+    let request;
+    try {
+      request = JSON.parse(message.toString());
+    } catch (_) {
+      ws.send(JSON.stringify({ type: "error", message: "invalid JSON" }));
+      return;
+    }
+
+    if (request.type !== "speak" || !request.text) {
+      ws.send(JSON.stringify({ type: "error", message: "expected { type: 'speak', text }" }));
+      return;
+    }
+
+    if (!ttsProvider) {
+      ws.send(
+        JSON.stringify({ type: "error", message: "TTS provider not configured (set SIXTYDB_API_KEY)" })
+      );
+      return;
+    }
+
+    console.log("tts: synthesizing", JSON.stringify(request.text).slice(0, 60));
+    try {
+      const result = await ttsProvider.synthesize(
+        request.text,
+        {
+          voiceId: request.voiceId,
+          speed: request.speed,
+          stability: request.stability,
+          similarity: request.similarity,
+        },
+        (chunk) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "audio", audio: chunk.audioBase64 }));
+          }
+        }
+      );
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "done", ...result }));
+      }
+      console.log("tts: synthesis complete");
+    } catch (error) {
+      console.error("tts: error", error);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "error", message: error.message }));
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("tts: client disconnected");
+  });
+});
+
+// Route WebSocket upgrades to the right server based on the request path.
+server.on("upgrade", (request, socket, head) => {
+  const { pathname } = new URL(request.url, `http://${request.headers.host}`);
+  const wss = pathname === "/tts" ? wssTts : wssStt;
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit("connection", ws, request);
   });
 });
 
